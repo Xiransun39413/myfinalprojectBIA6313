@@ -1,0 +1,429 @@
+---
+title: "San Francisco Airbnb Listing"
+author: "Amy Johnson"
+date: "3/7/2020"
+output: 
+  html_document: 
+    keep_md: yes
+---
+
+## I chose San Francisco as the final project because it's one of my farviorte city in the states  
+
+
+#packages needed
+library(GISTools)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(jsonlite)
+library(rgdal)
+library(sf)
+library(sp)
+library(tmap)
+
+
+
+```{r load dataset}
+SanFran.Airbnblistings <- read.csv("~/Graduate_School_Rockhurst/BIA_6313_GIS_SpringA2020/Final Project/San Francisco Airbnb listings.csv", header = TRUE)
+
+#change the first row to be the header
+SanFran.Airbnb <- SanFran.Airbnblistings[-1,]
+```
+
+
+
+```{r select room type}
+#filter only to private room
+room_type <- data.frame(unique(SanFran.Airbnb$room_type))
+library(tidyverse)
+Private_room <- SanFran.Airbnb %>% filter(room_type == "Private room")
+SanFran.Airbnb <- filter(Private_room)
+#delete columns that has no vlaue
+SanFran.Airbnb <- SanFran.Airbnb[,-5]
+#delete Hotels
+SanFran.Airbnb <- SanFran.Airbnb[c(-2396,-2397,-2398,-2399,-2400,-2378,-2379,-2380,-2381),]
+```
+
+
+```{r convert from unprojected to projected}
+#convert a CSV file into a spatial object
+library(rgdal)
+library(sf)
+SF.Airbnb.Pvt <- SanFran.Airbnb
+coordinates(SF.Airbnb.Pvt)= ~longitude+latitude
+class(SF.Airbnb.Pvt)
+```
+
+```{r set CRS}
+#setting the CRS WG84
+proj4string(SF.Airbnb.Pvt) <- CRS("+init=EPSG:4326")
+SF.Airbnb.Pvt@proj4string
+```
+
+
+```{r plot listngs by private room}
+plot(SF.Airbnb.Pvt)
+```
+```{r import San Francisco shapefile}
+library(rgdal)
+SanFran <- readOGR("~/Graduate_School_Rockhurst/BIA_6313_GIS_SpringA2020/Final Project/SF Find Neighborhoods")
+
+class(SanFran)
+
+head(SanFran@data,20)
+
+plot(SanFran)
+```
+```{r sf object to see neighborhood name}
+#To see San Francisco by neighborhood color variance
+library(sf)
+SanFran_sf <- st_as_sf(SanFran)
+class(SanFran_sf)
+plot(SanFran_sf["name"])
+```
+
+```{r ensure CRS for both SanFran sp object}
+SanFran@proj4string
+#change CRS to match Airbnb date frame
+proj4string(SanFran) <- CRS("+init=EPSG:4326")
+SanFran@proj4string
+```
+
+```{r change airbnb data to sf object}
+SF.Airbnb_sf <- st_as_sf(SF.Airbnb.Pvt)
+class(SF.Airbnb_sf)
+```
+
+# Map all the listings by private room type  
+
+```{r tmap}
+library(tmap)
+tm_shape(SanFran)+
+  tm_polygons("white")+
+  tm_shape(SF.Airbnb.Pvt)+
+  tm_dots(size = 0.1, shape = 19, col = "red", alpha = 0.5)
+```
+
+```{r tmap1}
+library(tmap)
+tm_shape(SanFran_sf)+
+  tm_fill("white")+
+  tm_borders()+
+  tm_shape(SF.Airbnb_sf)+
+  tm_dots(size = 0.1, shape = 19, col = "red", alpha = 0.5)+
+  tm_text("neighbourhood", size = 0.2)
+ 
+  
+#Too many neighbourhood hard to see the name of each neighbourhood
+```
+
+```{r mapview}
+library(mapview)
+mapview(SF.Airbnb.Pvt)
+```
+
+```{r turn off the interactive mode}
+tmap_mode("plot")
+```
+
+#Spatial Proximity Polygons  
+
+```{r proximity polygons}
+require(deldir)
+require(sp)
+```
+
+```{r Modified Carson Farmer code}
+voronoipolygons = function(layer) {
+  crds <- layer@coords
+  z <- deldir(crds[,1], crds[,2])
+  w <- tile.list(z)
+  polys <- vector(mode='list', length=length(w))
+  for (i in seq(along=polys)) {
+    pcrds <- cbind(w[[i]]$x, w[[i]]$y)
+    pcrds <- rbind(pcrds, pcrds[1,])
+    polys[[i]] <- Polygons(list(Polygon(pcrds)),
+                           ID=as.character(i))
+  }
+  SP <- SpatialPolygons(polys)
+  voronoi <- SpatialPolygonsDataFrame(SP, 
+                                      data=data.frame(x = seq(length(SP)),
+                                                      row.names=sapply(slot(SP, 'polygons'), 
+                                                                       function(x) slot(x, 'ID'))))
+  proj4string(voronoi) <- CRS(proj4string(layer))
+  return(voronoi)
+}
+
+
+library(gstat)
+library(tmap)
+
+
+SF.Airbnb.voro <- voronoipolygons(SF.Airbnb.Pvt)
+
+tmap_mode('plot')
+fpt <- tm_shape(SF.Airbnb.Pvt) + tm_dots(size=0.01)
+fvr <- tm_shape(SF.Airbnb.voro) + tm_borders()
+tmap_arrange(fpt,fvr)
+
+library(gstat)
+library(GISTools)
+tmap_mode('view')
+sh <- shading(breaks=c(15,30,45,60,75),cols=brewer.pal(6,'YlGn'))
+tm_shape(SF.Airbnb.voro) + tm_fill("lightgrey", col = 'x', alpha=0.6, title='Airbnb Price')
+
+
+```
+# Inverse Distance Weight(IDW)  
+
+```{r IDW}
+
+library(maptools)
+library(GISTools) 
+library(gstat) # Set up the gstat package
+# Define a sample grid then use it as a set of points 
+# to estimate fulmar density via IDW, with alpha=1 (inverse relationship)
+s.grid <- spsample(SF.Airbnb.voro,type='regular',n=10000)
+idw.est <- gstat::idw(price~1,SF.Airbnb.Pvt,
+                      newdata=s.grid,idp=1.0)
+
+tmap_mode('view')
+tm_shape(idw.est) + tm_dots(col='var1.pred',border.col=NA,alpha=0.7)
+tmap_mode('view')
+idw.grid <- SpatialPixelsDataFrame(idw.est,data.frame(idw.est)) 
+tm_shape(idw.grid) + tm_raster(col='var1.pred',title='Price')
+```
+
+
+### What about when the idp (alpha) = 2.0  
+
+```{r IDW alpha 2}
+idw.est2 <- gstat::idw(price~1,SF.Airbnb.Pvt,
+                       newdata=s.grid,idp=2.0)
+idw.grid2 <- SpatialPixelsDataFrame(idw.est2,data.frame(idw.est2)) 
+tmap_mode('view')
+tm_shape(idw.grid2) +  tm_raster(col='var1.pred',title='Airbnb Price')
+
+tmap_mode('plot')
+idw1 <- tm_shape(idw.grid) +  tm_raster(col='var1.pred',title='Alpha = 1')
+idw2 <- tm_shape(idw.grid2) +  tm_raster(col='var1.pred',title='Alpha = 2')
+tmap_arrange(idw1,idw2)
+```
+
+
+
+### What about when the idp (alpha) = 3.0  
+
+```{r IDW alpha 3}
+idw.est3 <- gstat::idw(price~1,SF.Airbnb.Pvt,
+                       newdata=s.grid,idp=3.0)
+idw.grid3 <- SpatialPixelsDataFrame(idw.est3,data.frame(idw.est3)) 
+tmap_mode('view')
+tm_shape(idw.grid3) +  tm_raster(col='var1.pred',title='Airbnb Price')
+
+tmap_mode('plot')
+idw2 <- tm_shape(idw.grid2) +  tm_raster(col='var1.pred',title='Alpha = 2')
+idw3 <- tm_shape(idw.grid3) +  tm_raster(col='var1.pred',title='Alpha = 3')
+tmap_arrange(idw2,idw3)
+```
+
+### Alpha changed from 1, 2 and 3, it displays opposite what I was expecting. when alpha increase, the prediction is lower  
+
+
+#Trend Surface Analysis  
+
+```{r trend surface analysis} 
+library(rgdal)
+library(tmap)
+
+SF.Airbnb.Pvt@bbox <- SF.Airbnb.voro@bbox
+
+tm_shape(SF.Airbnb.voro) + tm_polygons() +
+  tm_shape(SF.Airbnb.Pvt) +
+  tm_dots(col="price", palette = "RdBu", auto.palette.mapping = FALSE,
+          title="SF Airbnb Price \n", size=0.7) +
+  tm_text("price", just="left", xmod=.5, size = 0.7) +
+  tm_legend(legend.outside=TRUE)
+```
+
+```{r grid}
+
+# Create an empty grid where n is the total number of cells
+grd              <- as.data.frame(spsample(SF.Airbnb.Pvt, "regular", n=50000))
+names(grd)       <- c("X", "Y")
+coordinates(grd) <- c("X", "Y")
+gridded(grd)     <- TRUE  # Create SpatialPixel object
+fullgrid(grd)    <- TRUE  # Create SpatialGrid object
+
+# Add P's projection information to the empty grid
+proj4string(grd) <- proj4string(SF.Airbnb.Pvt)
+
+# Define the 1st order polynomial equation
+f.1 <- as.formula(price ~ X + Y) 
+
+# Add X and Y to Houses
+SF.Airbnb.Pvt$X <- coordinates(SF.Airbnb.Pvt)[,1]
+SF.Airbnb.Pvt$Y <- coordinates(SF.Airbnb.Pvt)[,2]
+
+# Run the regression model
+lm.1 <- lm( f.1, data=SF.Airbnb.Pvt)
+
+# Use the regression model output to interpolate the surface
+dat.1st <- SpatialGridDataFrame(grd, data.frame(var1.pred = predict(lm.1, newdata=grd))) 
+
+# Clip the interpolated raster to Texas
+library(raster)
+r   <- raster(dat.1st)
+r.m <- mask(r, SF.Airbnb.voro)
+
+# Plot the map
+tm_shape(r.m) + 
+  tm_raster(n=10, palette="RdBu", 
+            title="SF Airbnb Price") +
+  tm_shape(SF.Airbnb.Pvt) + tm_dots(size=0.2) +
+  tm_legend(legend.outside=TRUE)
+
+
+# Define the 2nd order polynomial equation
+f.2 <- as.formula(price ~ X + Y + I(X*X)+I(Y*Y) + I(X*Y))
+
+# Add X and Y to P
+SF.Airbnb.Pvt$X <- coordinates(SF.Airbnb.Pvt)[,1]
+SF.Airbnb.Pvt$Y <- coordinates(SF.Airbnb.Pvt)[,2]
+
+# Run the regression model
+lm.2 <- lm( f.2, data=SF.Airbnb.Pvt)
+
+# Use the regression model output to interpolate the surface
+dat.2nd <- SpatialGridDataFrame(grd, data.frame(var1.pred = predict(lm.2, newdata=grd))) 
+
+# Clip the interpolated raster to Texas
+r   <- raster(dat.2nd)
+r.m <- mask(r, SF.Airbnb.voro)
+
+# Plot the map
+tm_shape(r.m) + 
+  tm_raster(n=10, palette="RdBu",
+            title="SF Airbnb Price") +
+  tm_shape(SF.Airbnb.Pvt) + tm_dots(size=0.2) +
+  tm_legend(legend.outside=TRUE)
+
+```
+### Comparing Linear and Polynomial models, I'd say the linear model seems present better prediction on the airbnb price based on locaitons  
+
+
+#Ordinary Kriging  
+
+```{r ordinary kriging}
+
+#creating distance bands from 0 km to 250 km in step of 5km
+require(gstat)
+evgm <- variogram(price~1,SF.Airbnb.Pvt,
+                  boundaries=seq(10,5000,l=51))
+fvgm <- fit.variogram(evgm,vgm(10,"Mat",2500,1))#fit semivariogram using Matern function
+plot(evgm,model=fvgm)
+
+
+krig.est <- krige(price~1,SF.Airbnb.Pvt,newdata=s.grid,model=fvgm)
+krig.grid <- SpatialPixelsDataFrame(krig.est,krig.est@data)
+
+krig.map.est <- tm_shape(krig.grid) + 
+  tm_raster(col='var1.pred',title='SF Airbnb Price',palette='Reds') + 
+  tm_layout(legend.bg.color='white',legend.outside = TRUE)
+var.levs <- c(0,3,6,9,12,Inf) 
+krig.map.var <- tm_shape(krig.grid) + 
+  tm_raster(col='var1.var',title='Estimate Variance',palette='Reds') + 
+  tm_layout(legend.bg.color='white',legend.outside = TRUE)
+tmap_arrange(krig.map.est,krig.map.var)
+```
+### Ordinary Kriging shows softer layers than linear models, they have very simlar predictions that closer to downtown is more expensive on renting airbnb  
+
+
+# Multiple Linear Regression  
+
+```{r structure of data frame}
+str(SanFran.Airbnb)
+```
+
+```{r correltion plot}
+library(corrplot)
+corrs <- cor(SanFran.Airbnb[,c(9,10,11,14,15)])
+corrplot(corrs, method = "number")
+```
+
+```{r spatial points}
+head(SanFran.Airbnb)
+plot(SanFran)
+
+
+SanFran.Airbnb.spdf <- SpatialPointsDataFrame(SanFran.Airbnb[,6:7], SanFran.Airbnb)
+
+plot(SanFran.Airbnb.spdf, add=T, pch=16)
+
+# Not sure why I couldn't plot the airbnb data frame and the neighbourhood spaital polygons data frame, and I couldn't find a San Francisco city outline shapefile
+```
+
+```{r global mean and SD}
+mean(SanFran.Airbnb.spdf$price)
+sd(SanFran.Airbnb.spdf$price)
+```
+
+
+```{r local counterparts}
+library(GWmodel)
+localstats1 <- gwss(SanFran.Airbnb.spdf, vars = c("price"), bw=50000) #bandwidth is 50km
+
+head(data.frame(localstats1$SDF))
+```
+
+```{r plot new}
+
+library(RColorBrewer)
+plot.new()
+quick.map <- function(spdf,var,legend.title,main.title) {
+  x <- spdf@data[,var]
+  cut.vals <- pretty(x)
+  x.cut <- cut(x,cut.vals)
+  cut.levels <- levels(x.cut)
+  cut.band <- match(x.cut,cut.levels)
+  colors <- brewer.pal(length(cut.levels),'Reds')
+  par(mar=c(1,1,1,1))
+  plot(SanFran,col='grey85')
+  title(main.title)
+  plot(spdf,add=TRUE,col=colors[cut.band],pch=16)
+  legend('topleft',cut.levels,col=colors,pch=16,bty='n',title=legend.title)
+}
+
+plot.new()
+par(mfrow=c(1,2))
+quick.map(localstats1$SDF, "price_LM",
+          "US Dollar", "Geographically Weighted Mean")
+
+quick.map(localstats1$SDF, "price_LSD",
+          "US Dollar", "Local Standard Deviation")
+```
+
+````{r GWR regression}
+## ----dogwr,cache=TRUE----------------------------------------------------
+gwr.res <- gwr.basic(price~minimum_nights,
+                     data=SanFran.Airbnb.spdf,bw=50000, kernel='gaussian')
+
+## ----infogwr,size='tiny'-------------------------------------------------
+gwr.res
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
